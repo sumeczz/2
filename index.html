@@ -1,0 +1,365 @@
+<!-- ... existing code ... -->
+  <!-- PapaParse for CSV handling -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/papaparse/5.3.2/papaparse.min.js"></script>
+
+  <!-- Firebase v11.6.1 ES Module SDK for Cloud Sync -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+    import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+    import { getFirestore, doc, onSnapshot, setDoc, getDoc } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+    // Global Firebase Config & Setup
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'skladnikpro-app';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {
+      apiKey: "AIzaSyDemoKeySkladnikPro1234567890",
+      authDomain: "skladnikpro-demo.firebaseapp.com",
+      projectId: "skladnikpro-demo",
+      storageBucket: "skladnikpro-demo.appspot.com",
+      messagingSenderId: "123456789012",
+      appId: "1:123456789012:web:demo1234567890"
+    };
+
+    let app, db, auth;
+    try {
+      app = initializeApp(firebaseConfig);
+      db = getFirestore(app);
+      auth = getAuth(app);
+    } catch(e) {
+      console.warn("Firebase Init fallback:", e);
+    }
+
+    window.CloudSync = {
+      appId,
+      db,
+      auth,
+      currentUser: null,
+      activeSyncRoom: null,
+      unsubscribeListener: null,
+
+      async initAuth() {
+        if (!auth) return null;
+        return new Promise((resolve) => {
+          onAuthStateChanged(auth, async (user) => {
+            if (user) {
+              this.currentUser = user;
+              resolve(user);
+            } else {
+              try {
+                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                  const res = await signInWithCustomToken(auth, __initial_auth_token);
+                  this.currentUser = res.user;
+                } else {
+                  const res = await signInAnonymously(auth);
+                  this.currentUser = res.user;
+                }
+                resolve(this.currentUser);
+              } catch(err) {
+                console.error("Auth error:", err);
+                resolve(null);
+              }
+            }
+          });
+        });
+      },
+
+      async joinRoom(roomCode) {
+        if (!db) {
+          showToast("Cloudové rozhraní není dostupné.");
+          return;
+        }
+        await this.initAuth();
+        if (!this.currentUser) return;
+
+        const cleanRoom = roomCode.toUpperCase().trim();
+        if (!cleanRoom) return;
+
+        this.activeSyncRoom = cleanRoom;
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sync_rooms', cleanRoom);
+
+        if (this.unsubscribeListener) this.unsubscribeListener();
+
+        this.unsubscribeListener = onSnapshot(docRef, (docSnap) => {
+          if (docSnap.exists()) {
+            const data = docSnap.data();
+            if (data && data.sapProducts) {
+              sapProducts = data.sapProducts;
+              if (typeof renderSAPProducts === 'function') renderSAPProducts();
+            }
+            if (data && data.lastUpdatedBy) {
+              const statusElem = document.getElementById('cloudSyncStatusText');
+              if (statusElem) statusElem.innerText = `Aktivní synch (Místnost: ${cleanRoom})`;
+            }
+            showToast(`Data synchronizována z místnosti ${cleanRoom}`);
+          }
+        }, (err) => {
+          console.error("Sync Snapshot Error:", err);
+        });
+
+        // Save initial state if room does not exist
+        const snap = await getDoc(docRef);
+        if (!snap.exists()) {
+          await setDoc(docRef, {
+            createdAt: new Date().toISOString(),
+            roomCode: cleanRoom,
+            sapProducts: sapProducts || [],
+            lastUpdatedBy: this.currentUser.uid
+          });
+        }
+
+        document.getElementById('syncRoomInput').value = cleanRoom;
+        document.getElementById('currentRoomBadge').innerText = cleanRoom;
+        document.getElementById('syncStatusCard').classList.remove('hidden');
+        showToast(`Připojeno k synchronizační místnosti ${cleanRoom}`);
+      },
+
+      async pushState() {
+        if (!db || !this.activeSyncRoom) return;
+        await this.initAuth();
+        if (!this.currentUser) return;
+
+        const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'sync_rooms', this.activeSyncRoom);
+        try {
+          await setDoc(docRef, {
+            roomCode: this.activeSyncRoom,
+            sapProducts: sapProducts || [],
+            lastUpdatedBy: this.currentUser.uid,
+            updatedAt: new Date().toISOString()
+          }, { merge: true });
+          showToast("Změny odeslány do propojených zařízení!");
+        } catch(e) {
+          console.error("Error pushing state:", e);
+        }
+      }
+    };
+  </script>
+
+  <style>
+<!-- ... existing code ... -->
+    // Tab Definitions Setup
+    const ALL_TABS_DEF = {
+      'dashboard': { label: 'Šaržovní Den', icon: 'fa-calendar-day', color: 'text-amber-400' },
+      'sap-parser': { label: 'Chytrý Vkládač ze SAPu', icon: 'fa-wand-magic-sparkles', color: 'text-amber-400' },
+      'ewm-manual': { label: 'SAP EWM Průvodce', icon: 'fa-graduation-cap', color: 'text-sky-400' },
+      'sscc': { label: 'GS1-128 & SSCC', icon: 'fa-barcode', color: 'text-amber-400' },
+      'barcodes': { label: 'Kódy & ZPL', icon: 'fa-print', color: 'text-sky-400' },
+      'sap': { label: 'SAP Zásoby', icon: 'fa-database', color: 'text-emerald-400' },
+      'fefo': { label: 'FEFO Garance', icon: 'fa-clock-rotate-left', color: 'text-purple-400' },
+      'truck': { label: 'Kamion 33 PAL', icon: 'fa-truck-front', color: 'text-sky-400' },
+      'tips': { label: 'Tipy & Triky', icon: 'fa-lightbulb', color: 'text-yellow-400' },
+      'sync': { label: 'Propojení PC / Mobil', icon: 'fa-rotate', color: 'text-emerald-400' },
+      'changelog': { label: 'Changelog', icon: 'fa-list-check', color: 'text-slate-400' }
+    };
+<!-- ... existing code ... -->
+      <!-- ==================== TAB 5: BARCODES & ZPL ==================== -->
+<!-- ... existing code ... -->
+
+      <!-- ==================== TAB: TIPY A TRIKY (HACKY PRO SKLAD) ==================== -->
+      <section id="sec-tips" class="tab-section hidden space-y-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
+          <div class="border-b border-slate-800 pb-3">
+            <h2 class="text-xs sm:text-sm font-black text-amber-400 uppercase tracking-wider flex items-center gap-2">
+              <i class="fa-solid fa-lightbulb text-yellow-400"></i> Skladové Tipy, Triky & SAP Klávesové Zkratky
+            </h2>
+            <p class="text-xs text-slate-400 mt-0.5">Praktické vychytávky z praxe na hale pro zrychlení práce s RF čtečkou, SAPem a čárovými kódy.</p>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+            
+            <!-- SAP GUI & Fiori Hacks -->
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+              <h3 class="font-bold text-sky-400 uppercase text-[11px] flex items-center gap-1.5">
+                <i class="fa-solid fa-keyboard"></i> SAP GUI & Fiori Rychlé Zkratky
+              </h3>
+              <ul class="space-y-2 text-slate-300">
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-amber-400 text-xs">/n + kód transakce</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Otevře novou transakci a ukončí předchozí (např. <code class="text-white">/n/SCWM/MON</code> přeskočí rovnou do Monitoru).</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-amber-400 text-xs">/o + kód transakce</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Otevře novou transakci v <strong>novém samostatném okně</strong> SAP GUI bez zavření současného.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-emerald-400 text-xs">Ctrl + Y (Blokový výběr tabulky)</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Umožní v SAP GUI označit a zkopírovat pouze 1 konkrétní sloupec bez okolního textu.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-amber-400 text-xs">F8 (Spustit / Vyhledat)</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Univerzální klávesa pro spuštění vyhledávání nebo budíku v SAPu.</p>
+                </li>
+              </ul>
+            </div>
+
+            <!-- Scanner & Barcode Hacks -->
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+              <h3 class="font-bold text-emerald-400 uppercase text-[11px] flex items-center gap-1.5">
+                <i class="fa-solid fa-barcode"></i> Trik na Čtečky & Poškozené Kódy
+              </h3>
+              <ul class="space-y-2 text-slate-300">
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-bold text-white text-xs">Oprava Poškozeného Čárového Kódu Fixem</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Pokud má čárový kód poškrábané bílé mezery, laser čtečky selže. Stačí černou lihovkou doplnit chybějící vertikální čáru – skener čte pouze černé odrazy!</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-bold text-white text-xs">Skenování z Displeje Mobilu</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Průmyslové laserové čtečky špatně čtou z lesklých obrazovek. Nastavte jas telefonu na <strong>100%</strong> a nakloňte displej v úhlu 45° proti laseru.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-bold text-amber-400 text-xs">Nastavení Suffixu Čtečky na "Enter"</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Nakonfigurujte HW čtečku Zebra/Honeywell tak, aby za naskenovaný kód automaticky poslala klávesu <code>ENTER</code>. Ušetříte tisíce kliknutí denně.</p>
+                </li>
+              </ul>
+            </div>
+
+            <!-- RF Terminal Shortcuts -->
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+              <h3 class="font-bold text-purple-400 uppercase text-[11px] flex items-center gap-1.5">
+                <i class="fa-solid fa-mobile-screen"></i> RF Čtečka Klávesové Triky
+              </h3>
+              <ul class="space-y-2 text-slate-300">
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-purple-400 text-xs">F1 ZmQty</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Převzetí celého balení / palety bez nutnosti ručně přepisovat požadovaný kusový stav.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-purple-400 text-xs">F2 OdebHU</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Odebrání pouze přesného množství z palety, zbytková paleta zůstane zachována v původní buňce.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-mono-code font-bold text-purple-400 text-xs">Hledání podle posledních 4 čísel SSCC</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Při hledání palety na hale nemusíte skenovat celý 18-místný kód – v RF vyhledávání stačí napsat např. <code class="text-amber-400">*1822</code>.</p>
+                </li>
+              </ul>
+            </div>
+
+            <!-- PWA & Offline Hacks -->
+            <div class="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2.5">
+              <h3 class="font-bold text-amber-400 uppercase text-[11px] flex items-center gap-1.5">
+                <i class="fa-solid fa-bolt"></i> PWA & Offline Trik Pro Prohlížeč
+              </h3>
+              <ul class="space-y-2 text-slate-300">
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-bold text-white text-xs">Instalace "Přidat na Plochu"</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">V Safari (iOS) nebo Chrome (Android) klepněte na tlačítko Sdílet &rarr; <em>Přidat na domovskou obrazovku</em>. Aplikace získá vlastní ikonu a poběží bez lišt prohlížeče.</p>
+                </li>
+                <li class="bg-slate-900 p-2 rounded-lg border border-slate-800">
+                  <span class="font-bold text-white text-xs">Rychlý Hard Refresh při Seknutí</span>
+                  <p class="text-[10px] text-slate-400 mt-0.5">Na PC stiskněte <code>Ctrl + Shift + R</code>. Na mobilu podržte ikonu aplikace a zvolte <em>Vyčistit mezipaměť</em>.</p>
+                </li>
+              </ul>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB: PROPOJENÍ PC / MOBIL (ZERO REGISTRATION) ==================== -->
+      <section id="sec-sync" class="tab-section hidden space-y-4">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 sm:p-5 shadow-xl space-y-4">
+          <div class="border-b border-slate-800 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div>
+              <h2 class="text-xs sm:text-sm font-black text-emerald-400 uppercase tracking-wider flex items-center gap-2">
+                <i class="fa-solid fa-rotate text-emerald-400"></i> Synchronizace PC & Mobilu Bez Registrace
+              </h2>
+              <p class="text-xs text-slate-400 mt-0.5">Sdílejte stejnou SAP databázi a šarže mezi počítačem v kanceláři a mobilním telefonem na hale bez vytváření účtu.</p>
+            </div>
+            <div id="syncStatusCard" class="hidden bg-emerald-500/10 border border-emerald-500/30 px-3 py-1.5 rounded-xl text-xs flex items-center gap-2 self-start sm:self-auto">
+              <span class="relative flex h-2.5 w-2.5">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2.5 w-2.5 bg-emerald-500"></span>
+              </span>
+              <span id="cloudSyncStatusText" class="font-mono-code font-bold text-emerald-400 text-[11px]">Propojeno</span>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-5">
+            
+            <!-- Connection Setup Card -->
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+              <h3 class="text-xs font-bold text-white uppercase flex items-center gap-1.5">
+                <i class="fa-solid fa-plug text-amber-400"></i> Připojení Zařízení (Kód Místnosti)
+              </h3>
+              
+              <div class="space-y-2 text-xs">
+                <label class="block text-[11px] font-bold text-slate-400">Zadejte nebo vygenerujte Kód Propojení (PIN):</label>
+                <div class="flex gap-2">
+                  <input type="text" id="syncRoomInput" placeholder="Např. ZMTZ-8842" class="bg-slate-900 border border-slate-800 rounded-xl px-3 py-2 font-mono-code font-bold text-amber-400 uppercase w-full focus:outline-none focus:border-emerald-500 text-sm">
+                  <button onclick="joinCloudRoomFromInput()" class="bg-emerald-600 hover:bg-emerald-500 text-white font-extrabold px-4 py-2 rounded-xl text-xs transition shrink-0">
+                    Připojit
+                  </button>
+                </div>
+              </div>
+
+              <div class="flex gap-2 pt-1">
+                <button onclick="generateRandomSyncRoom()" class="flex-1 bg-slate-900 hover:bg-slate-800 border border-slate-800 text-slate-300 font-bold py-2 px-3 rounded-xl text-xs transition flex items-center justify-center gap-1.5">
+                  <i class="fa-solid fa-dice"></i> Nový Náhodný Kód
+                </button>
+                <button onclick="pushCurrentStateToCloud()" class="flex-1 bg-amber-500 hover:bg-amber-600 text-slate-950 font-black py-2 px-3 rounded-xl text-xs transition flex items-center justify-center gap-1.5 shadow-md">
+                  <i class="fa-solid fa-cloud-arrow-up"></i> Odeslat Změny
+                </button>
+              </div>
+
+              <div class="bg-slate-900 p-3 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <div class="font-bold text-slate-200">Aktivní Kód Propojení: <span id="currentRoomBadge" class="text-amber-400 font-mono-code">Nepřipojeno</span></div>
+                <p>Napište stejný kód na druhém zařízení (např. mobilu) a data se okamžitě přenesou.</p>
+              </div>
+            </div>
+
+            <!-- QR Code Connection Quick Scan -->
+            <div class="bg-slate-950 p-4 rounded-xl border border-slate-800 flex flex-col items-center justify-center text-center space-y-3">
+              <h3 class="text-xs font-bold text-white uppercase flex items-center gap-1.5">
+                <i class="fa-solid fa-qrcode text-sky-400"></i> Rychlé Propojení Mobilu Přes QR Kód
+              </h3>
+
+              <div id="syncQrContainer" class="bg-white p-3 rounded-xl shadow-lg border border-slate-300 flex justify-center min-w-[130px] min-h-[130px] items-center">
+                <div class="text-slate-400 text-[10px] font-bold">Vygenerujte kód pro zobrazení QR</div>
+              </div>
+
+              <p class="text-[11px] text-slate-400 max-w-xs">Naskenujte tento QR kód fotoaparátem mobilu pro okamžité načtení kódu propojení bez psaní.</p>
+            </div>
+
+          </div>
+        </div>
+      </section>
+
+      <!-- ==================== TAB 6: CHANGELOG ==================== -->
+<!-- ... existing code ... -->
+  <script>
+    // Functions for Cloud Sync Room Management
+    function joinCloudRoomFromInput() {
+      const val = document.getElementById('syncRoomInput').value;
+      if (!val) {
+        showToast("Zadejte kód propojení.");
+        return;
+      }
+      if (window.CloudSync) {
+        window.CloudSync.joinRoom(val);
+        renderSyncQrCode(val);
+      }
+    }
+
+    function generateRandomSyncRoom() {
+      const randomPin = 'ZMTZ-' + Math.floor(1000 + Math.random() * 9000);
+      document.getElementById('syncRoomInput').value = randomPin;
+      joinCloudRoomFromInput();
+    }
+
+    function pushCurrentStateToCloud() {
+      if (window.CloudSync && window.CloudSync.activeSyncRoom) {
+        window.CloudSync.pushState();
+      } else {
+        showToast("Nejprve se připojte k místnosti.");
+      }
+    }
+
+    function renderSyncQrCode(roomCode) {
+      const qrEl = document.getElementById('syncQrContainer');
+      if (!qrEl) return;
+      qrEl.innerHTML = '';
+      try {
+        new QRCode(qrEl, { text: `SKLADNIKPRO_ROOM:${roomCode}`, width: 120, height: 120 });
+      } catch(e) {}
+    }
+  </script>
+</body>
+</html>
